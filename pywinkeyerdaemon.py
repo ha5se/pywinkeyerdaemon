@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 pywinkeyerdaemon
@@ -25,6 +25,7 @@ import argparse
 import atexit
 
 import serial
+import time
 
 _LOCALHOST_ADDRESS = "127.0.0.1"
 _DEFAULT_PORT = 6789
@@ -79,6 +80,7 @@ class Winkeyer(object):
 
         self.abort()
         self.port.write((chr(0x19) + chr(seconds)).encode())
+        time.sleep(seconds)
 
     def ptt(self, ptt):
         if ptt:
@@ -87,10 +89,29 @@ class Winkeyer(object):
             self.port.write((chr(0x18) + chr(0)).encode())
 
     def sidetoneenable(self, enable):
+        """cf. winkey datasheet: SetPinConig, bit 1 """
+        global state_pinconfig
         if enable:
-            self.port.write((chr(0x09) + chr(0b0110)).encode())
-        else:
-            self.port.write((chr(0x09) + chr(0b0100)).encode())
+            state_pinconfig |= 0b0010
+
+    def pttenable(self, enable):
+        """cf. winkey datasheet: SetPinConig, bit 0 """
+        global state_pinconfig
+        if enable:
+            state_pinconfig |= 0b0001
+
+    def ptthangdelay(self, hang):
+        """cf. winkey datasheet: SetPinConig, bit 4-5 """
+        global state_pinconfig
+        state_pinconfig |= hang << 4
+
+    def write_pinconfig(self):
+        """cf. winkey datasheet: SetPinConig """
+        global state_pinconfig
+        self.port.write((chr(0x09) + chr(state_pinconfig)).encode())
+
+    def write_pttdelays(self, lead, tail):
+        self.port.write((chr(0x04) + chr(lead) + chr(tail)).encode())
 
 
 def _expand_cwdaemon_prosigns_for_winkeyer(s):
@@ -293,6 +314,18 @@ if __name__ == "__main__":
     parser.add_argument("--sidetoneon",
                         help="start with sidetone on (default off)",
                         action="store_true")
+    parser.add_argument("--pttenable",
+                        help="start with enabling PTT (default off)",
+                        action="store_true")
+    parser.add_argument("--pttleaddelay", required=False, type=int,
+                        choices=range(0,251), metavar="[0-250]", default=0,
+                        help="PTT lead delay, 0 to 250 in 10 ms steps")
+    parser.add_argument("--ptttaildelay", required=False, type=int,
+                        choices=range(0,251), metavar="[0-250]", default=0,
+                        help="PTT tail delay, 0 to 250 in 10 ms steps")
+    parser.add_argument("--ptthangdelay", required=False, type=int,
+                        choices=range(0,4), metavar="[0-3]", default=0,
+                        help="PTT hang delay, 0 to 3, for paddle keying")
 
     args = parser.parse_args()
 
@@ -305,6 +338,7 @@ if __name__ == "__main__":
     state_delay = 0
     state_ptt = False
     state_speed = 0
+    state_pinconfig = 0b0100
 
     def set_delay(delay):
         global state_delay
@@ -335,8 +369,12 @@ if __name__ == "__main__":
         print("Warning:  listening to nonlocal hosts as well as localhost.")
     winkeyer = Winkeyer(args.device)
     winkeyer.sidetoneenable(args.sidetoneon)
+    winkeyer.pttenable(args.pttenable)
+    winkeyer.ptthangdelay(args.ptthangdelay)
     server = socketserver.UDPServer(
         (_LOCALHOST_ADDRESS, args.port), CwdaemonServer)
+    winkeyer.write_pinconfig()
+    winkeyer.write_pttdelays(args.pttleaddelay, args.ptttaildelay)
     server.serve_forever()
 
 # vim: ts=4 sw=4 expandtab
