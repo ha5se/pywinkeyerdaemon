@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 """
-pywinkeyerdaemon
+pywinkeyerdaemon  V1.1
 
 Use "pywinkeyerdaemon --help" for help.
 
@@ -54,6 +54,7 @@ class Winkeyer(object):
         printdbg("host_open returned:  " + str(version))
         assert version in self.SUPPORTED_VERSIONS, version
         self.port.timeout = 0.1
+        self.port.write((chr(0x0) + chr(0x0b)).encode())	# set WK2 Mode
         atexit.register(self.host_close)
 
     def host_close(self):
@@ -74,13 +75,18 @@ class Winkeyer(object):
 
         Anything buffered is aborted.
         """
+        global state_tunemethod2
 
         assert isinstance(seconds, int), type(seconds)
-        assert 0 <= seconds <= 99, seconds
+        assert 1 <= seconds <= 99, seconds
 
         self.abort()
-        self.port.write((chr(0x19) + chr(seconds)).encode())
-        time.sleep(seconds)
+        if state_tunemethod2:
+            self.port.write((chr(0x0b) + chr(0x01)).encode())
+            time.sleep(seconds)
+            self.port.write((chr(0x0b) + chr(0x00)).encode())
+        else:
+            self.port.write((chr(0x19) + chr(seconds)).encode())
 
     def ptt(self, ptt):
         if ptt:
@@ -88,30 +94,27 @@ class Winkeyer(object):
         else:
             self.port.write((chr(0x18) + chr(0)).encode())
 
-    def sidetoneenable(self, enable):
-        """cf. winkey datasheet: SetPinConig, bit 1 """
-        global state_pinconfig
-        if enable:
-            state_pinconfig |= 0b0010
 
-    def pttenable(self, enable):
-        """cf. winkey datasheet: SetPinConig, bit 0 """
-        global state_pinconfig
-        if enable:
-            state_pinconfig |= 0b0001
+    # ========== writting SetPinConfig, cf. winkey2 datasheet ==========
+    def write_pinconfig(self, pinconfig):
+        printdbg("pinconfig:  {:08b}".format(pinconfig))
+        self.port.write((chr(0x09) + chr(pinconfig)).encode())
 
-    def ptthangdelay(self, hang):
-        """cf. winkey datasheet: SetPinConig, bit 4-5 """
-        global state_pinconfig
-        state_pinconfig |= hang << 4
-
-    def write_pinconfig(self):
-        """cf. winkey datasheet: SetPinConig """
-        global state_pinconfig
-        self.port.write((chr(0x09) + chr(state_pinconfig)).encode())
-
+    # ========== writting Lead/Tail delays, cf. winkey2 datasheet ==========
     def write_pttdelays(self, lead, tail):
+        printdbg("lead/tail delay:  {:d}  {:d}".format(lead, tail))
         self.port.write((chr(0x04) + chr(lead) + chr(tail)).encode())
+
+    # ========== writting Sidetone Control, including Sidetone Frequency, cf. winkey2 datasheet ==========
+    def write_sidetonefreq(self, freq):
+        printdbg("sidetone:  {:d}".format(freq))
+        self.port.write((chr(0x01) + chr(freq)).encode())
+
+    # ========== writting Winkeyer2 Mode, Paddle Swap Contest Spacing, cf. winkey2 datasheet ==========
+    def write_wk2mode(self, wk2mode):
+        printdbg("WK2 Mode:  {:08b}".format(wk2mode))
+        #self.port.write((chr(0x0e) + chr(wk2mode)).encode())
+
 
 
 def _expand_cwdaemon_prosigns_for_winkeyer(s):
@@ -254,34 +257,31 @@ class CwdaemonServer(socketserver.BaseRequestHandler):
                 printdbg("prosigns expanded")
                 printdbg("message:  {}".format(repr(data)))
 
-            CANCEL_BUFFERED_SPEED_CHANGE = "\x1e"
-            BUFFERED_SPEED_CHANGE = "\x1c"
-            MIN_SPEED, MAX_SPEED = 5, 99
-            speed_message_data = ""
-            speed = orig_speed = get_speed()
             if '+' in data or '-' in data:
+                CANCEL_BUFFERED_SPEED_CHANGE = "\x1e"
+                BUFFERED_SPEED_CHANGE = "\x1c"
+                MIN_SPEED, MAX_SPEED = 5, 99
+                speed_message_data = ""
+                speed = last_speed = get_speed()
                 for nextchar in data:
                     if nextchar == '+':
                         if speed:
-                            if speed > MAX_SPEED - 2:
+                            speed += 2
+                            if speed > MAX_SPEED:
                                 speed = MAX_SPEED
-                            else:
-                                speed += 2
-                            speed_message_data += (
-                                BUFFERED_SPEED_CHANGE + chr(speed))
                     elif nextchar == '-':
                         if speed:
-                            if speed < MIN_SPEED + 2:
+                            speed -= 2
+                            if speed < MIN_SPEED:
                                 speed = MIN_SPEED
-                            else:
-                                speed -= 2
+                    else:
+                        if speed != last_speed:
                             speed_message_data += (
                                 BUFFERED_SPEED_CHANGE + chr(speed))
-                    else:
+                            last_speed = speed
                         speed_message_data += nextchar
                 if speed:
                     # messages won't leave speed modified
-                    speed = orig_speed
                     speed_message_data += CANCEL_BUFFERED_SPEED_CHANGE
                     printdbg("cwdaemon +/- speed controls expanded/translated")
                 else:
@@ -326,6 +326,20 @@ if __name__ == "__main__":
     parser.add_argument("--ptthangdelay", required=False, type=int,
                         choices=range(0,4), metavar="[0-3]", default=0,
                         help="PTT hang delay, 0 to 3, for paddle keying")
+    parser.add_argument("--sidetonefreq", required=False, type=int,
+                        choices=range(1,11), metavar="[1-10]", default=6,
+                        help="Sidetone frequency, refer to winkey2 datasheet,"
+                             " 1 to 10 decimal, defaults to 6 (meaning 666Hz)")
+    parser.add_argument("--tunemethod2",
+                        help="For tune, use method2 (Key Immediate). Try this if the "
+                             "default does not work for you. Default is Key Buffered",
+                        action="store_true")
+    parser.add_argument("--paddleswap",
+                        help="Swap paddle for left-handed op",
+                        action="store_true")
+    parser.add_argument("--contestspacing",
+                        help="Reduce wordspace to 6 dits from the default 7",
+                        action="store_true")
 
     args = parser.parse_args()
 
@@ -338,7 +352,8 @@ if __name__ == "__main__":
     state_delay = 0
     state_ptt = False
     state_speed = 0
-    state_pinconfig = 0b0100
+
+    state_tunemethod2 = args.tunemethod2
 
     def set_delay(delay):
         global state_delay
@@ -368,13 +383,13 @@ if __name__ == "__main__":
     if accept_remote:
         print("Warning:  listening to nonlocal hosts as well as localhost.")
     winkeyer = Winkeyer(args.device)
-    winkeyer.sidetoneenable(args.sidetoneon)
-    winkeyer.pttenable(args.pttenable)
-    winkeyer.ptthangdelay(args.ptthangdelay)
     server = socketserver.UDPServer(
         (_LOCALHOST_ADDRESS, args.port), CwdaemonServer)
-    winkeyer.write_pinconfig()
+
+    winkeyer.write_pinconfig(args.pttenable << 0 | args.sidetoneon << 1 | True << 2 | args.ptthangdelay << 4)
+    winkeyer.write_wk2mode(args.contestspacing << 0 | args.paddleswap << 3)
     winkeyer.write_pttdelays(args.pttleaddelay, args.ptttaildelay)
+    winkeyer.write_sidetonefreq(args.sidetonefreq)
     server.serve_forever()
 
 # vim: ts=4 sw=4 expandtab
