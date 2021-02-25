@@ -107,8 +107,28 @@ class Winkeyer(object):
 
     # ========== writting Sidetone Control, including Sidetone Frequency, cf. winkey2 datasheet ==========
     def write_sidetonefreq(self, freq):
-        printdbg("sidetone:  {:d}".format(freq))
-        self.port.write((chr(0x01) + chr(freq)).encode())
+        if freq <= 420:
+            wkfreq = 0xa
+        elif freq < 470:
+            wkfreq = 0x9
+        elif freq < 540:
+            wkfreq = 0x8
+        elif freq < 620:
+            wkfreq = 0x7
+        elif freq < 730:
+            wkfreq = 0x6
+        elif freq < 900:
+            wkfreq = 0x5
+        elif freq < 1160:
+            wkfreq = 0x4
+        elif freq < 1660:
+            wkfreq = 0x3
+        elif freq < 3000:
+            wkfreq = 0x2
+        else:
+            wkfreq = 0x1
+        printdbg("sidetone frequency:  {:d} Hz,  winkey:  {:d}".format(freq, wkfreq))
+        self.port.write((chr(0x01) + chr(wkfreq)).encode())
 
     # ========== writting Winkeyer2 Mode, Paddle Swap Contest Spacing, cf. winkey2 datasheet ==========
     def write_wk2mode(self, wk2mode):
@@ -173,8 +193,9 @@ class CwdaemonServer(socketserver.BaseRequestHandler):
                 winkeyer.setspeed(int(speed))
             elif data[1] == '3':
                 tone = data[2:]
-                printdbg("set tone:  {}".format(tone))
-                printdbg(data[2:])
+                #printdbg("set tone:  {}".format(tone))
+                #printdbg(data[2:])
+                winkeyer.write_sidetonefreq(tone)
             elif data[1] == '4':
                 printdbg("abort message")
                 winkeyer.abort()
@@ -326,10 +347,6 @@ if __name__ == "__main__":
     parser.add_argument("--ptthangdelay", required=False, type=int,
                         choices=range(0,4), metavar="[0-3]", default=0,
                         help="PTT hang delay, 0 to 3, for paddle keying")
-    parser.add_argument("--sidetonefreq", required=False, type=int,
-                        choices=range(1,11), metavar="[1-10]", default=6,
-                        help="Sidetone frequency, refer to winkey2 datasheet,"
-                             " 1 to 10 decimal, defaults to 6 (meaning 666Hz)")
     parser.add_argument("--tunemethod2",
                         help="For tune, use method2 (Key Immediate). Try this if the "
                              "default does not work for you. Default is Key Buffered",
@@ -340,6 +357,11 @@ if __name__ == "__main__":
     parser.add_argument("--contestspacing",
                         help="Reduce wordspace to 6 dits from the default 7",
                         action="store_true")
+
+    parser.add_argument("-T", "--tone", required=False, type=int,
+                        choices=range(0,4001), metavar="[0-4000]", default=800,
+                        help="Sidetone frequency, refer to winkey2 datasheet,"
+                             " 0 to 4000Hz, defaults to 800Hz")
 
     args = parser.parse_args()
 
@@ -389,7 +411,7 @@ if __name__ == "__main__":
     winkeyer.write_pinconfig(args.pttenable << 0 | args.sidetoneon << 1 | True << 2 | args.ptthangdelay << 4)
     winkeyer.write_wk2mode(args.contestspacing << 0 | args.paddleswap << 3)
     winkeyer.write_pttdelays(args.pttleaddelay, args.ptttaildelay)
-    winkeyer.write_sidetonefreq(args.sidetonefreq)
+    winkeyer.write_sidetonefreq(args.tone)
     server.serve_forever()
 
 # vim: ts=4 sw=4 expandtab
